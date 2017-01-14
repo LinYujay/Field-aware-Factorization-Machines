@@ -13,7 +13,7 @@ object Utility {
         for (i <-0 until rows)
             for ( j <- 0 until cols)
                 {
-                    _matrix(i)(j) = rand.nextDouble() / 20.0
+                    _matrix(i)(j) = rand.nextDouble() / 15.0
                     if (rand.nextInt()%2 == 0) _matrix(i)(j) *= -1
                 }
         _matrix

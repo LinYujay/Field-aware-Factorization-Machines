@@ -70,6 +70,8 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
       *         label = 1 or -1
       *         features = element of "#field:#bucket#", splitted by space
       *
+      * see test.scala for reference
+      *
       *********************************************************************/
     def fit(df:DataFrame) = {
         val count:Double = df.count()
@@ -117,7 +119,7 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
 
         val logits = _FFM(features, _weights)
         val ldf = _ldf(logits, label)
-        val loss = _loss(logits, label)
+        val loss = _ae(logits, label)
 
         gradients += Tuple2("AE", loss.toString)
 
@@ -247,7 +249,8 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
 
     private def _sigmoid(logits:Double) = 1.0 / 1.0 + exp(-logits)
 
-    private def _loss(logits:Double, label:Int) = abs((exp(logits) - exp(-logits)) / (exp(logits) + exp(-logits)) - label)
+    // absolutely error
+    private def _ae(logits:Double, label:Int) = abs((exp(logits) - exp(-logits)) / (exp(logits) + exp(-logits)) - label)
 
     /************************************************************************
       * evaluate trained model
