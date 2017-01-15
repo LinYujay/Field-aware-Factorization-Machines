@@ -39,7 +39,7 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
     var lr = 1.0
     var steps = 10
     var lambda = 0.0001
-    var batchSize = 1024
+    var batchSize = 100
 
     var weights:Map[Int, Map[Int, Feature]] = {
         var _weights = Map[Int, Map[Int, Feature]]()
@@ -67,8 +67,8 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
       * train Field-aware Factorization Machines
       *
       * input - DataFrame("label", "features")
-      *         label = 1 or -1
-      *         features = element of "#field:#bucket#", splitted by space
+      *         label = 1.0 or -1.0
+      *         features = Array of string element("field:bucket")
       *
       * see test.scala for reference
       *
@@ -97,13 +97,13 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
         val _weights = weights
 
         val results = df.flatMap(row =>{
-            val label = row.getAs[String]("label").toInt
-            val features = row.getAs[String]("features").split(" ")
+            val label = row.getAs[Double]("label")
+            val features = row.getAs[Seq[String]]("features").toArray
             val gradients = _calGradient(features, _weights, label)
             gradients.toList
         })
           .reduceByKey{
-              case (g1, g2) => (_reduceGradient(g1, g2))
+              case (g1, g2) => (_reduceGradient(g1.toArray, g2.toArray))
           }
           .collect()
 
@@ -114,14 +114,14 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
       * calculate gradient for one instance
       *
       *********************************************************************/
-    private def _calGradient(features:Array[String], _weights:Map[Int, Map[Int, Feature]], label:Int) = {
-        var gradients = ArrayBuffer[Tuple2[String, String]]()
+    private def _calGradient(features:Array[String], _weights:Map[Int, Map[Int, Feature]], label:Double) = {
+        var gradients = ArrayBuffer[Tuple2[String, Array[Double]]]()
 
         val logits = _FFM(features, _weights)
         val ldf = _ldf(logits, label)
         val loss = _ae(logits, label)
 
-        gradients += Tuple2("AE", loss.toString)
+        gradients += Tuple2("AE", Array(loss))
 
         features.foreach(feature1 => {
             val field1 = feature1.split(":")(0).toInt
@@ -138,8 +138,8 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
                     val g12 = _add(_dot(fdw12, lambda), _dot(fdw21, ldf))
                     val g21 = _add(_dot(fdw21, lambda), _dot(fdw12, ldf))
 
-                    gradients += Tuple2(field1 + ":" + bucket1 + ":" + field2, g12.mkString("@"))
-                    gradients += Tuple2(field2 + ":" + bucket2 + ":" + field1, g21.mkString("@"))
+                    gradients += Tuple2(field1 + ":" + bucket1 + ":" + field2, g12)
+                    gradients += Tuple2(field2 + ":" + bucket2 + ":" + field1, g21)
                 }
             })
         })
@@ -150,7 +150,7 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
       * loss derivate Field-aware-Factorization-Machines
       *
       *********************************************************************/
-    private def _ldf(logits:Double, label:Int) = - label.toDouble / (1 + exp(label.toDouble * logits))
+    private def _ldf(logits:Double, label:Double) = - label / (1 + exp(label * logits))
 
 
     /**********************************************************************
@@ -165,7 +165,7 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
       * apply gradient for Field-aware-Factorization-Machines
       *
       *********************************************************************/
-    private def _applyGradient(gradients:Array[Tuple2[String, String]]) = {
+    private def _applyGradient(gradients:Array[Tuple2[String, Array[Double]]]) = {
 
         gradients.foreach(gradient => {
 
@@ -177,14 +177,14 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
 
                 val v = weights(field1)(bucket1).weights(field2)
 
-                for((g, i) <- gradient._2.split("@") zip (0 until gradient._2.split("@").length))
+                for((g, i) <- gradient._2 zip (0 until gradient._2.length))
                 {
                     val w = weights(field1)(bucket1).weights(field2)(i)
                     weights(field1)(bucket1).weights(field2)(i) -= g.toDouble * (1.0 / batchSize) * lr
                 }
             }
             else{
-                _log("MAE: " + gradient._2.toDouble / batchSize)
+                _log("MAE: " + gradient._2(0) / batchSize)
             }
         })
     }
@@ -193,14 +193,13 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
       * reduce gradients for weight ij
       *
       *********************************************************************/
-    private def _reduceGradient(g1:String, g2:String) = {
-        var s = ""
-        for((i, j) <- g1.split("@") zip g2.split("@"))
+    private def _reduceGradient(g1:Array[Double], g2:Array[Double]) = {
+        var g = ArrayBuffer[Double]()
+        for((i, j) <- g1 zip g2)
         {
-            s += (i.toDouble + j.toDouble).toString + "@"
+            g += (i + j)
         }
-
-        s.substring(0, s.length() - 1)
+        g.toArray
     }
 
     /*********************************************************************
@@ -233,24 +232,13 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
       * math ops
       *
       ************************************************************************/
-    private def _dot(v1:Array[Double], value:Double) = {
-        val v = ArrayBuffer[Double]()
-        for(i <- v1)
-            v += i * value
-        v.toArray
-    }
+    private def _dot(v1:Array[Double], value:Double):Array[Double] = for(i <- v1) yield i * value
 
-    private def _add(v1:Array[Double], v2:Array[Double]) = {
-        val v = ArrayBuffer[Double]()
-        for((i, j) <- v1 zip v2)
-            v += (i + j)
-        v.toArray
-    }
+    private def _add(v1:Array[Double], v2:Array[Double]):Array[Double] = for((i, j) <- v1 zip v2) yield i + j
 
-    private def _sigmoid(logits:Double) = 1.0 / 1.0 + exp(-logits)
+    private def _sigmoid(logits:Double) = 1.0 / (1.0 + exp(-logits))
 
-    // absolutely error
-    private def _ae(logits:Double, label:Int) = abs((exp(logits) - exp(-logits)) / (exp(logits) + exp(-logits)) - label)
+    private def _ae(logits:Double, label:Double) = abs((exp(logits) - exp(-logits) / (exp(logits) + exp(-logits)) - label))
 
     /************************************************************************
       * evaluate trained model
@@ -266,12 +254,13 @@ class FieldFactorizationMachines(fieldsConfig:Array[Int], latentVariableNumber:I
         val _weights = weights
 
         df.map(row => {
-            val features = row.getAs[String]("features").split(" ")
+            val features = row.getAs[Seq[String]]("features").toArray
             val logits = _FFM(features, _weights)
             val score = _sigmoid(logits)
 
-            var label = 1.0
-            if (row.getAs[String]("label").toInt != -1) label = 0.0
+            var label = row.getAs[Double]("label")
+
+            if (label == -1.0) label = 0.0
 
             (score, label)
         })
